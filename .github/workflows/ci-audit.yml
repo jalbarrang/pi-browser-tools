@@ -1,0 +1,55 @@
+name: "CI: Audit"
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Bump dependencies to latest
+        run: |
+          bunx npm-check-updates -u
+          bun install
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Build (if present)
+        run: |
+          if [ -n "$(jq -r '.scripts.build // empty' package.json)" ]; then
+            bun run build
+          fi
+
+      - name: Test (if present)
+        run: |
+          if [ -n "$(jq -r '.scripts.test // empty' package.json)" ]; then
+            bun run test
+          fi
+
+      - name: Security audit (informational)
+        run: bun audit || true
+
+      - name: Open PR with the bumps
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: ci/audit-dependency-bumps
+          delete-branch: true
+          commit-message: "fix(deps): bump dependencies to latest"
+          title: "fix(deps): bump dependencies to latest"
+          body: |
+            Automated daily dependency bump (`CI: Audit`).
+
+            All bumps passed typecheck, build, and tests in this workflow run
+            before the PR was opened. Merging triggers release-please, so the
+            updated dependencies ship in the next patch release.
