@@ -1,10 +1,15 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import * as actualAgentBrowserCli from '../../extensions/browser-tools/backends/agent-browser-cli.js';
 
 const calls: string[][] = [];
 
 // Mock the CLI layer so the backend's connect/open/close orchestration is
-// observable without spawning a real agent-browser process.
+// observable without spawning a real agent-browser process. Spread the real
+// module first: bun's mock.module persists for the whole test process, so a
+// partial mock would strip exports (e.g. checkAgentBrowserAvailable) from
+// other test files that load after this one — file order differs by platform.
 mock.module('../../extensions/browser-tools/backends/agent-browser-cli.js', () => ({
+  ...actualAgentBrowserCli,
   assertAgentBrowserAvailable: async () => undefined,
   viewportFor: (_preset?: string, width?: number, height?: number) => ({
     width: width ?? 1280,
