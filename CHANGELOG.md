@@ -1,5 +1,12 @@
 # @dreki-gg/pi-browser-tools
 
+## [0.7.2](https://github.com/jalbarrang/pi-browser-tools/compare/v0.7.1...v0.7.2) (2026-07-11)
+
+
+### Bug Fixes
+
+* **test:** stop partial mock.module from leaking across test files ([#4](https://github.com/jalbarrang/pi-browser-tools/issues/4)) ([4e1ebff](https://github.com/jalbarrang/pi-browser-tools/commit/4e1ebff0c61494267201bd7a4061e27bc26e3bbc))
+
 ## [0.7.1](https://github.com/jalbarrang/pi-browser-tools/compare/v0.7.0...v0.7.1) (2026-07-11)
 
 
