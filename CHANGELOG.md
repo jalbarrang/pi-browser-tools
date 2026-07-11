@@ -1,5 +1,12 @@
 # @dreki-gg/pi-browser-tools
 
+## [0.7.1](https://github.com/jalbarrang/pi-browser-tools/compare/v0.7.0...v0.7.1) (2026-07-11)
+
+
+### Bug Fixes
+
+* **ci:** pin bun to 1.3.14 in the publish job ([#2](https://github.com/jalbarrang/pi-browser-tools/issues/2)) ([0e24a44](https://github.com/jalbarrang/pi-browser-tools/commit/0e24a44b352656f554a6f2f5329b21938666a90e))
+
 ## [0.7.0](https://github.com/jalbarrang/pi-browser-tools/compare/v0.6.0...v0.7.0) (2026-07-11)
 
 
