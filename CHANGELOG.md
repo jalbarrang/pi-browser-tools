@@ -1,5 +1,12 @@
 # @dreki-gg/pi-browser-tools
 
+## [0.7.0](https://github.com/jalbarrang/pi-browser-tools/compare/v0.6.0...v0.7.0) (2026-07-11)
+
+
+### Features
+
+* extract pi-browser-tools from dreki-gg/pi-extensions monorepo ([ab910c8](https://github.com/jalbarrang/pi-browser-tools/commit/ab910c86eae5839fd164779feb64844efb3ec6ff))
+
 ## 0.6.0
 
 ### Minor Changes
