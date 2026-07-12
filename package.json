@@ -1,7 +1,7 @@
 {
   "name": "@dreki-gg/pi-browser-tools",
-  "version": "0.7.2",
-  "description": "Browser automation and web research tools for pi \u2014 search, visit, screenshot, interact, and inspect console output",
+  "version": "0.7.3",
+  "description": "Browser automation and web research tools for pi — search, visit, screenshot, interact, and inspect console output",
   "keywords": [
     "pi-package",
     "pi",
