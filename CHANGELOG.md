@@ -1,5 +1,12 @@
 # @dreki-gg/pi-browser-tools
 
+## [0.7.3](https://github.com/jalbarrang/pi-browser-tools/compare/v0.7.2...v0.7.3) (2026-07-12)
+
+
+### Bug Fixes
+
+* migrate to pi-ai 0.80 compat imports and bump dependencies ([#8](https://github.com/jalbarrang/pi-browser-tools/issues/8)) ([75020a3](https://github.com/jalbarrang/pi-browser-tools/commit/75020a39b16d80a65e4d86853bc4e9f4ae8d3420))
+
 ## [0.7.2](https://github.com/jalbarrang/pi-browser-tools/compare/v0.7.1...v0.7.2) (2026-07-11)
 
 
