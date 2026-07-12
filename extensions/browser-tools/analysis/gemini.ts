@@ -1,4 +1,4 @@
-import { completeSimple } from '@earendil-works/pi-ai';
+import { completeSimple } from '@earendil-works/pi-ai/compat';
 
 type EnvLike = Record<string, string | undefined>;
 

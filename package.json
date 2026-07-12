@@ -37,22 +37,22 @@
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "jpeg-js": "^0.4.4",
-    "linkedom": "^0.18.12",
-    "pako": "^2.1.0",
-    "turndown": "^7.2.1"
+    "linkedom": "^0.18.13",
+    "pako": "^3.0.1",
+    "turndown": "^7.2.4"
   },
   "devDependencies": {
-    "@types/node": "24",
+    "@types/node": "26",
     "@types/pako": "^2.0.4",
-    "oxfmt": "^0.43.0",
-    "oxlint": "^1.58.0",
-    "typescript": "^6.0.0",
-    "@earendil-works/pi-ai": "^0.75.4",
-    "@earendil-works/pi-coding-agent": "^0.75.4",
-    "typebox": "^1.0.55"
+    "oxfmt": "^0.58.0",
+    "oxlint": "^1.73.0",
+    "typescript": "^7.0.2",
+    "@earendil-works/pi-ai": "^0.80.6",
+    "@earendil-works/pi-coding-agent": "^0.80.6",
+    "typebox": "^1.3.6"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-ai": ">=0.80.0",
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
   },
