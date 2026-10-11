@@ -2,7 +2,12 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { StringEnum } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
 import { resolveBrowserBackend } from './backends/select.js';
-import type { BrowserBackendName, ConsoleEntry, ViewportPreset } from './backends/types.js';
+import type {
+  BrowserBackendName,
+  BrowserScreenshotResult,
+  ConsoleEntry,
+  ViewportPreset,
+} from './backends/types.js';
 import {
   analyzeScreenshot,
   resolveAnalyzeEnabled,
@@ -11,10 +16,16 @@ import {
 import { fetchAsMarkdown, renderedPageToMarkdown } from './markdown.js';
 import { webSearch } from './search.js';
 import { resolveCdpTarget } from './backends/resolve-cdp-target.js';
+import {
+  resolveSaveEnabled,
+  saveScreenshotPng,
+  type SavedScreenshot,
+} from './image/save-screenshot.js';
 
 const TOOL_GUIDELINES = [
   'Use `web_search` to find information online, then `web_visit` to read specific pages.',
   'Use `web_screenshot` and `web_interact` for visual verification and page interaction.',
+  '`web_screenshot` and `web_interact` can persist the full-resolution PNG to disk with `save: true` (under `~/.pi/agent/temp/screenshots`); pass `save_folder`/`save_name` to control where and what, and the saved path is returned for later reference.',
   '`web_visit` returns markdown by default without launching a browser. Use `render: true` only for JavaScript-heavy SPAs.',
   'To drive an already-running, authenticated Chrome, start it with `--remote-debugging-port=9222` and pass `cdp: "localhost:9222"` to `web_screenshot`/`web_visit` (or set `PI_BROWSER_CDP`). The connected browser is never auto-closed.',
 ];
@@ -44,6 +55,58 @@ const CONSOLE_LEVEL_ENUM = [
   'trace',
   'page-error',
 ] as const;
+
+const SAVE_PARAMS = {
+  save: Type.Optional(
+    Type.Boolean({
+      description:
+        "Save the screenshot as a PNG under pi's temp dir so it can be referenced later (default: ~/.pi/agent/temp/screenshots).",
+    }),
+  ),
+  save_folder: Type.Optional(
+    Type.String({
+      description:
+        'Subfolder under ~/.pi/agent/temp to save into (default "screenshots"). Relative paths only.',
+    }),
+  ),
+  save_name: Type.Optional(
+    Type.String({
+      description:
+        'File name for the saved PNG (default: "<host>-<timestamp>.png"). A .png extension is added when missing.',
+    }),
+  ),
+};
+
+type SaveParams = { save?: boolean; save_folder?: string; save_name?: string };
+
+/** A save_folder/save_name implies intent to save even without `save: true`. */
+function shouldSaveScreenshot(params: SaveParams): boolean {
+  return resolveSaveEnabled(params.save, env) || Boolean(params.save_folder || params.save_name);
+}
+
+/** Persist the raw PNG capture under pi's temp dir when saving was requested. */
+async function maybeSaveScreenshot(
+  params: SaveParams,
+  screenshot: BrowserScreenshotResult,
+): Promise<SavedScreenshot | undefined> {
+  if (!shouldSaveScreenshot(params)) {
+    return undefined;
+  }
+  if (!screenshot.pngBase64) {
+    throw new Error('Raw PNG was not captured, so the screenshot cannot be saved.');
+  }
+
+  return saveScreenshotPng({
+    png: Buffer.from(screenshot.pngBase64, 'base64'),
+    url: screenshot.url,
+    folder: params.save_folder,
+    name: params.save_name,
+  });
+}
+
+function savedScreenshotBlock(saved: SavedScreenshot | undefined) {
+  return saved ? [{ type: 'text' as const, text: `Screenshot saved to ${saved.path}` }] : [];
+}
 
 function formatSearchResults(
   results: Array<{ title: string; url: string; snippet: string }>,
@@ -164,6 +227,7 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
       analyze_prompt: Type.Optional(
         Type.String({ description: 'Custom prompt for screenshot analysis (requires analyze).' }),
       ),
+      ...SAVE_PARAMS,
     }),
     async execute(
       _toolCallId: string,
@@ -175,7 +239,7 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
         cdp?: string;
         analyze?: boolean;
         analyze_prompt?: string;
-      },
+      } & SaveParams,
       signal: AbortSignal | undefined,
       _onUpdate: unknown,
       ctx: { modelRegistry: AnalysisModelRegistry },
@@ -189,7 +253,9 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
         width: params.width,
         height: params.height,
         waitMs: 1500,
+        capturePng: shouldSaveScreenshot(params),
       });
+      const saved = await maybeSaveScreenshot(params, screenshot);
 
       if (resolveAnalyzeEnabled(params.analyze, env)) {
         const analysis = await analyzeScreenshot({
@@ -201,12 +267,13 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
           env,
         });
         return {
-          content: [{ type: 'text', text: analysis.text }],
+          content: [{ type: 'text', text: analysis.text }, ...savedScreenshotBlock(saved)],
           details: {
             backend: browserBackend.name,
             url: screenshot.url,
             viewport: screenshot.viewport,
             analysis: { model: analysis.model } as { model: string } | undefined,
+            savedPath: saved?.path,
           },
         };
       }
@@ -218,12 +285,14 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
             data: screenshot.imageBase64,
             mimeType: screenshot.mimeType,
           },
+          ...savedScreenshotBlock(saved),
         ],
         details: {
           backend: browserBackend.name,
           url: screenshot.url,
           viewport: screenshot.viewport,
           analysis: undefined,
+          savedPath: saved?.path,
         },
       };
     },
@@ -255,6 +324,7 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
       analyze_prompt: Type.Optional(
         Type.String({ description: 'Custom prompt for screenshot analysis (requires analyze).' }),
       ),
+      ...SAVE_PARAMS,
     }),
     async execute(
       _toolCallId: string,
@@ -269,7 +339,7 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
         timeout?: number;
         analyze?: boolean;
         analyze_prompt?: string;
-      },
+      } & SaveParams,
       signal: AbortSignal | undefined,
       _onUpdate: unknown,
       ctx: { modelRegistry: AnalysisModelRegistry },
@@ -284,7 +354,10 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
       }
 
       const interaction = await browserBackend.interact(params);
-      const screenshot = await browserBackend.screenshot();
+      const screenshot = await browserBackend.screenshot({
+        capturePng: shouldSaveScreenshot(params),
+      });
+      const saved = await maybeSaveScreenshot(params, screenshot);
 
       if (resolveAnalyzeEnabled(params.analyze, env)) {
         const analysis = await analyzeScreenshot({
@@ -299,6 +372,7 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
           content: [
             { type: 'text', text: `Action completed: ${params.action}` },
             { type: 'text', text: analysis.text },
+            ...savedScreenshotBlock(saved),
           ],
           details: {
             action: params.action,
@@ -306,6 +380,7 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
             url: interaction.url ?? screenshot.url,
             viewport: interaction.viewport ?? screenshot.viewport,
             analysis: { model: analysis.model } as { model: string } | undefined,
+            savedPath: saved?.path,
           },
         };
       }
@@ -321,6 +396,7 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
             data: screenshot.imageBase64,
             mimeType: screenshot.mimeType,
           },
+          ...savedScreenshotBlock(saved),
         ],
         details: {
           action: params.action,
@@ -328,6 +404,7 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
           url: interaction.url ?? screenshot.url,
           viewport: interaction.viewport ?? screenshot.viewport,
           analysis: undefined,
+          savedPath: saved?.path,
         },
       };
     },

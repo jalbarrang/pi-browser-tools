@@ -149,6 +149,7 @@ class AgentBrowserBackend implements BrowserBackend {
     width?: number;
     height?: number;
     waitMs?: number;
+    capturePng?: boolean;
   }): Promise<BrowserScreenshotResult> {
     return this.runExclusive(async () => {
       await this.ensureAvailable();
@@ -169,12 +170,13 @@ class AgentBrowserBackend implements BrowserBackend {
         await this.waitForPage(options?.waitMs ?? DEFAULT_WAIT_MS);
       }
 
-      const captured = await this.captureScreenshot();
+      const captured = await this.captureScreenshot(options?.capturePng ?? false);
       await this.refreshUrl(options?.url);
 
       return {
         imageBase64: captured.base64,
         mimeType: captured.mimeType,
+        pngBase64: captured.pngBase64,
         url: this.status.url,
         viewport: this.status.viewport,
       };
@@ -424,7 +426,11 @@ class AgentBrowserBackend implements BrowserBackend {
     }
   }
 
-  private async captureScreenshot(): Promise<{ base64: string; mimeType: 'image/jpeg' | 'image/png' }> {
+  private async captureScreenshot(capturePng = false): Promise<{
+    base64: string;
+    mimeType: 'image/jpeg' | 'image/png';
+    pngBase64?: string;
+  }> {
     const tempDir = await mkdtemp(join(tmpdir(), 'pi-browser-tools-agent-browser-'));
     const screenshotPath = join(tempDir, 'screenshot.png');
 
@@ -433,8 +439,12 @@ class AgentBrowserBackend implements BrowserBackend {
       const png = await readFile(screenshotPath);
       // Cap dimensions (retina/full-page captures can exceed Anthropic's 2000px
       // many-image limit) and re-encode to JPEG so a long session of
-      // screenshots stays under the total request-size limit.
-      return encodeScreenshot(new Uint8Array(png.buffer, png.byteOffset, png.byteLength));
+      // screenshots stays under the total request-size limit. Keep the raw PNG
+      // when the caller wants to persist the full-resolution capture.
+      return {
+        ...encodeScreenshot(new Uint8Array(png.buffer, png.byteOffset, png.byteLength)),
+        ...(capturePng ? { pngBase64: png.toString('base64') } : {}),
+      };
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

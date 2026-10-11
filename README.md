@@ -91,6 +91,27 @@ export WEB_SCREENSHOT_MODEL=google:gemini-2.5-flash
 
 The chosen model must have auth configured in pi (API key / OAuth) like any other model.
 
+## Saving screenshots
+
+`web_screenshot` and `web_interact` can persist the full-resolution PNG to disk so it
+can be shared or referenced later:
+
+```jsonc
+{ "save": true }                          // ~/.pi/agent/temp/screenshots/<host>-<timestamp>.png
+{ "save": true, "save_folder": "proj-x" } // ~/.pi/agent/temp/proj-x/<host>-<timestamp>.png
+{ "save": true, "save_name": "checkout" } // ~/.pi/agent/temp/screenshots/checkout.png
+```
+
+- `save`: write the PNG (default folder: `screenshots`).
+- `save_folder`: subfolder under `~/.pi/agent/temp` (relative paths only).
+- `save_name`: file name, with `.png` appended when missing. Defaults to
+  `<host>-<YYYYMMDD-HHmmss>.png`.
+- Passing `save_folder` or `save_name` implies saving even without `save: true`.
+- Global default: `WEB_SCREENSHOT_SAVE=1` (truthy: `1`, `true`, `yes`, `on`).
+
+The tool result includes the saved path, e.g.
+`/Users/you/.pi/agent/temp/screenshots/example.com-20251006-143012.png`.
+
 ## Notes
 
 - `web_visit` uses plain fetch by default and falls back to the selected browser backend when the fetched markdown is too thin.

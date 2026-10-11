@@ -43,6 +43,11 @@ export type BrowserScreenshotResult = {
   imageBase64: string;
   /** Mime type of the encoded image (JPEG after compression, PNG on fallback). */
   mimeType: 'image/jpeg' | 'image/png';
+  /**
+   * Base64 of the raw, uncapped PNG capture. Present only when the caller asked
+   * for it via `screenshot({ capturePng: true })`, e.g. to save it to disk.
+   */
+  pngBase64?: string;
   url: string | null;
   viewport: { width: number; height: number } | null;
 };
@@ -72,6 +77,8 @@ export interface BrowserBackend {
     width?: number;
     height?: number;
     waitMs?: number;
+    /** Also return the raw PNG bytes (base64) alongside the encoded image. */
+    capturePng?: boolean;
   }): Promise<BrowserScreenshotResult>;
   interact(params: BrowserInteractParams): Promise<{
     url: string | null;
