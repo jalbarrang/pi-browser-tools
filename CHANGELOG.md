@@ -1,5 +1,12 @@
 # @dreki-gg/pi-browser-tools
 
+## [0.8.0](https://github.com/jalbarrang/pi-browser-tools/compare/v0.7.3...v0.8.0) (2026-10-20)
+
+
+### Features
+
+* save screenshots to pi's temp dir ([13c47d2](https://github.com/jalbarrang/pi-browser-tools/commit/13c47d224d586e4db057abcbfc0d68e30e2ffe8e))
+
 ## [0.7.3](https://github.com/jalbarrang/pi-browser-tools/compare/v0.7.2...v0.7.3) (2026-07-12)
 
 
