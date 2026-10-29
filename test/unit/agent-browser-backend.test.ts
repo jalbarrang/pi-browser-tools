@@ -23,6 +23,12 @@ mock.module('../../extensions/browser-tools/backends/agent-browser-cli.js', () =
     if (args[0] === 'get' && args[1] === 'url') {
       return { url: 'https://app.example.com/dashboard' };
     }
+    if (args[0] === 'snapshot') {
+      return {
+        origin: 'https://app.example.com/dashboard',
+        snapshot: '- button "Save" [ref=e1]',
+      };
+    }
     return {};
   },
 }));
@@ -50,7 +56,7 @@ describe('AgentBrowserBackend CDP connect', () => {
     await agentBrowserBackend.navigate('https://app.example.com/dashboard');
 
     const names = commandNames();
-    expect(names).toContain('connect http://localhost:9222');
+    expect(names).toContain('connect http://localhost:9222 --pin-tab');
     expect(names).toContain('open https://app.example.com/dashboard');
     // A bare `open` (no url) would risk spawning a second browser.
     expect(names).not.toContain('open');
@@ -73,7 +79,7 @@ describe('AgentBrowserBackend CDP connect', () => {
     agentBrowserBackend.bindCdpTarget('http://localhost:9333');
     await agentBrowserBackend.navigate('https://app.example.com/dashboard');
 
-    expect(commandNames()).toContain('connect http://localhost:9222');
+    expect(commandNames()).toContain('connect http://localhost:9222 --pin-tab');
     expect(commandNames()).not.toContain('connect http://localhost:9333');
   });
 
@@ -85,5 +91,15 @@ describe('AgentBrowserBackend CDP connect', () => {
     calls.length = 0;
     await agentBrowserBackend.close();
     expect(commandNames()).toContain('close');
+  });
+
+  test('snapshot returns the interactive accessibility tree', async () => {
+    await agentBrowserBackend.navigate('https://example.com');
+    calls.length = 0;
+
+    const snapshot = await agentBrowserBackend.snapshot();
+
+    expect(snapshot).toBe('- button "Save" [ref=e1]');
+    expect(commandNames()).toContain('snapshot -i');
   });
 });

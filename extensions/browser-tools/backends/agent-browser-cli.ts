@@ -5,7 +5,8 @@ const AGENT_BROWSER_BIN = 'agent-browser';
 const DESKTOP_VIEWPORT = { width: 1280, height: 800 };
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
 const STDOUT_STDERR_EXCERPT_LENGTH = 1_000;
-const BROWSER_TOOLS_SESSION_ID = `pi-browser-tools-${process.pid}`;
+const BROWSER_TOOLS_SESSION_ID =
+  process.env.PI_BROWSER_SESSION?.trim() || `pi-browser-tools-${process.pid}`;
 const AGENT_BROWSER_INSTALL_GUIDANCE = [
   'agent-browser backend selected, but the CLI is unavailable.',
   'Install with one of:',
@@ -26,6 +27,7 @@ export type AgentBrowserJsonEnvelope<T> = {
   success?: boolean;
   data?: T;
   error?: unknown;
+  code?: string;
 };
 
 export function getBrowserToolsSessionId(): string {
@@ -69,9 +71,36 @@ export async function runAgentBrowser(
   return result;
 }
 
+export type AgentBrowserJsonOptions = {
+  cwd?: string;
+  /**
+   * Retry once when the daemon answers with `outcome_unknown` (it accepted the
+   * command but returned no response, typically while a previous session was
+   * still shutting down). Only use for idempotent commands like `open`.
+   */
+  retryOnOutcomeUnknown?: boolean;
+};
+
 export async function runAgentBrowserJson<T>(
   args: string[],
-  options: { cwd?: string } = {},
+  options: AgentBrowserJsonOptions = {},
+): Promise<T> {
+  try {
+    return await runAgentBrowserJsonOnce<T>(args, options);
+  } catch (error) {
+    if (!options.retryOnOutcomeUnknown || !isOutcomeUnknownError(error)) {
+      throw error;
+    }
+
+    // Give the old daemon a beat to finish shutting down before reconnecting.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    return runAgentBrowserJsonOnce<T>(args, options);
+  }
+}
+
+async function runAgentBrowserJsonOnce<T>(
+  args: string[],
+  options: AgentBrowserJsonOptions,
 ): Promise<T> {
   const result = await runAgentBrowser(args, {
     cwd: options.cwd,
@@ -97,6 +126,7 @@ export async function runAgentBrowserJson<T>(
       throw new Error(
         [
           `agent-browser returned an unsuccessful JSON response for: ${formatCommand(withSessionAndJson(args, true))}`,
+          `Code: ${parsed.code ?? 'unknown'}`,
           `Error: ${formatJsonError(parsed.error)}`,
           `Stdout: ${excerpt(result.stdout)}`,
           `Stderr: ${excerpt(result.stderr)}`,
@@ -110,30 +140,33 @@ export async function runAgentBrowserJson<T>(
   return parsed as T;
 }
 
+function isOutcomeUnknownError(error: unknown): boolean {
+  return error instanceof Error && /outcome_unknown/iu.test(error.message);
+}
+
 export async function assertAgentBrowserAvailable(): Promise<void> {
   agentBrowserAvailabilityCheck ??= checkAgentBrowserAvailable();
   await agentBrowserAvailabilityCheck;
 }
 
 /**
- * Verify the agent-browser CLI is present and responsive.
+ * Verify the agent-browser CLI is present and runnable.
  *
- * Uses a lightweight `session list` liveness probe rather than the old
- * `doctor --offline --quick` health check. `doctor` is a leftover from the
- * pre–agent-browser (Playwright) era and is absent on some shipping builds
- * (e.g. the native 0.19.x CLI), which made a perfectly working CLI report as
- * "unavailable" on every web tool call. `session list` is supported across
- * versions and returns cleanly, so availability tracks reality.
+ * `--version` is the most portable probe: every shipping CLI supports it and,
+ * unlike `session list`, it does not start a daemon. Starting a daemon here
+ * raced the first real command on fast runtimes (the daemon accepted the
+ * connection before it could answer) and surfaced as a spurious
+ * `outcome_unknown` EOF error.
  *
- * The `run` parameter is injectable for tests; it defaults to the real JSON
- * runner. A missing executable (ENOENT) keeps its detailed install message from
- * the spawn layer; any other probe failure surfaces the install guidance.
+ * The `run` parameter is injectable for tests; it defaults to the real runner.
+ * A missing executable (ENOENT) keeps its detailed install message from the
+ * spawn layer; any other probe failure surfaces the install guidance.
  */
 export async function checkAgentBrowserAvailable(
-  run: (args: string[]) => Promise<unknown> = (args) => runAgentBrowserJson(args),
+  run: (args: string[]) => Promise<unknown> = (args) => runAgentBrowser(args),
 ): Promise<void> {
   try {
-    await run(['session', 'list']);
+    await run(['--version']);
   } catch (error) {
     if (error instanceof Error && /not found in PATH|ENOENT/iu.test(error.message)) {
       throw error;

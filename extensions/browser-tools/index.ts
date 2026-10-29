@@ -8,11 +8,6 @@ import type {
   ConsoleEntry,
   ViewportPreset,
 } from './backends/types.js';
-import {
-  analyzeScreenshot,
-  resolveAnalyzeEnabled,
-  type AnalysisModelRegistry,
-} from './analysis/gemini.js';
 import { fetchAsMarkdown, renderedPageToMarkdown } from './markdown.js';
 import { webSearch } from './search.js';
 import { resolveCdpTarget } from './backends/resolve-cdp-target.js';
@@ -26,9 +21,18 @@ const TOOL_GUIDELINES = [
   'Use `web_search` to find information online, then `web_visit` to read specific pages.',
   'Use `web_screenshot` and `web_interact` for visual verification and page interaction.',
   '`web_screenshot` and `web_interact` can persist the full-resolution PNG to disk with `save: true` (under `~/.pi/agent/temp/screenshots`); pass `save_folder`/`save_name` to control where and what, and the saved path is returned for later reference.',
+  'After a page-changing action, pass `snapshot: true` to `web_interact` to get fresh `@refs` as text instead of another screenshot.',
   '`web_visit` returns markdown by default without launching a browser. Use `render: true` only for JavaScript-heavy SPAs.',
   'To drive an already-running, authenticated Chrome, start it with `--remote-debugging-port=9222` and pass `cdp: "localhost:9222"` to `web_screenshot`/`web_visit` (or set `PI_BROWSER_CDP`). The connected browser is never auto-closed.',
 ];
+
+/** Codemode lists these tools under one namespace with a single description. */
+const BROWSER_NAMESPACE = {
+  name: 'browser',
+  description: 'Browser automation and web research',
+  instructions:
+    'Call from codemode scripts as tools.web_search, tools.web_visit, tools.web_screenshot, tools.web_interact, and tools.web_console. Results resolve to structured objects; screenshots expose an image block ({ type: "image", data, mimeType }) that can be passed to image().',
+};
 
 const CDP_PARAM = Type.Optional(
   Type.String({
@@ -79,6 +83,64 @@ const SAVE_PARAMS = {
 
 type SaveParams = { save?: boolean; save_folder?: string; save_name?: string };
 
+const VIEWPORT_OUTPUT = Type.Object({ width: Type.Number(), height: Type.Number() });
+
+/** Shape accepted by codemode's `image()` and TypeBox schema for image blocks. */
+const IMAGE_OUTPUT = Type.Object({
+  type: Type.Literal('image'),
+  data: Type.String(),
+  mimeType: Type.String(),
+});
+
+const SEARCH_OUTPUT = Type.Object({
+  provider: Type.String(),
+  results: Type.Array(
+    Type.Object({ title: Type.String(), url: Type.String(), snippet: Type.String() }),
+  ),
+});
+
+const VISIT_OUTPUT = Type.Object({
+  method: Type.String(),
+  backend: Type.String(),
+  title: Type.String(),
+  url: Type.String(),
+  length: Type.Number(),
+  markdown: Type.String(),
+});
+
+const SCREENSHOT_OUTPUT = Type.Object({
+  backend: Type.String(),
+  url: Type.Union([Type.String(), Type.Null()]),
+  viewport: Type.Union([VIEWPORT_OUTPUT, Type.Null()]),
+  image: IMAGE_OUTPUT,
+  savedPath: Type.Optional(Type.String()),
+});
+
+const INTERACT_OUTPUT = Type.Object({
+  action: Type.String(),
+  backend: Type.String(),
+  url: Type.Union([Type.String(), Type.Null()]),
+  viewport: Type.Union([VIEWPORT_OUTPUT, Type.Null()]),
+  snapshot: Type.Optional(Type.String()),
+  image: Type.Optional(IMAGE_OUTPUT),
+  savedPath: Type.Optional(Type.String()),
+});
+
+const CONSOLE_OUTPUT = Type.Object({
+  count: Type.Number(),
+  levels: Type.Record(Type.String(), Type.Number()),
+  cleared: Type.Boolean(),
+  backend: Type.String(),
+  entries: Type.Array(
+    Type.Object({
+      level: Type.String(),
+      text: Type.String(),
+      url: Type.Union([Type.String(), Type.Null()]),
+      timestamp: Type.Number(),
+    }),
+  ),
+});
+
 /** A save_folder/save_name implies intent to save even without `save: true`. */
 function shouldSaveScreenshot(params: SaveParams): boolean {
   return resolveSaveEnabled(params.save, env) || Boolean(params.save_folder || params.save_name);
@@ -106,6 +168,15 @@ async function maybeSaveScreenshot(
 
 function savedScreenshotBlock(saved: SavedScreenshot | undefined) {
   return saved ? [{ type: 'text' as const, text: `Screenshot saved to ${saved.path}` }] : [];
+}
+
+/** Image block shape that codemode's `image()` accepts. */
+function imageBlockFor(screenshot: BrowserScreenshotResult) {
+  return {
+    type: 'image' as const,
+    data: screenshot.imageBase64,
+    mimeType: screenshot.mimeType,
+  };
 }
 
 function formatSearchResults(
@@ -138,6 +209,9 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
     description: 'Search the web and return up to 10 filtered results.',
     promptSnippet: 'Search the web and return a list of results',
     promptGuidelines: TOOL_GUIDELINES,
+    outputSchema: SEARCH_OUTPUT,
+    namespace: BROWSER_NAMESPACE,
+    annotations: { readOnlyHint: true, openWorldHint: true },
     parameters: Type.Object({
       query: Type.String({ description: 'Search query' }),
       allowed_domains: Type.Optional(Type.Array(Type.String({ description: 'Allowed domain' }))),
@@ -153,13 +227,15 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
         blocked_domains: params.blocked_domains,
         signal,
       });
+      const structuredContent = {
+        provider: (env.WEB_SEARCH_PROVIDER ?? 'duckduckgo').toLowerCase(),
+        results: result.results,
+      };
 
       return {
         content: [{ type: 'text', text: formatSearchResults(result.results) }],
-        details: {
-          provider: (env.WEB_SEARCH_PROVIDER ?? 'duckduckgo').toLowerCase(),
-          results: result.results,
-        },
+        details: structuredContent,
+        structuredContent,
       };
     },
   });
@@ -171,6 +247,9 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
       'Fetch a URL and convert it to readable markdown, with optional browser rendering.',
     promptSnippet: 'Fetch a URL and convert it to readable markdown',
     promptGuidelines: TOOL_GUIDELINES,
+    outputSchema: VISIT_OUTPUT,
+    namespace: BROWSER_NAMESPACE,
+    annotations: { readOnlyHint: true, openWorldHint: true },
     parameters: Type.Object({
       url: Type.String({ description: 'URL to fetch' }),
       render: Type.Optional(Type.Boolean({ description: 'Force browser rendering' })),
@@ -192,6 +271,14 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
         !params.render && result.markdown.trim().length < 200 && !browserBackend.isOpen()
           ? renderedPageToMarkdown(await browserBackend.renderPage(params.url))
           : result;
+      const structuredContent = {
+        method: finalResult.method,
+        backend: browserBackend.name,
+        title: finalResult.title,
+        url: finalResult.url,
+        length: finalResult.markdown.length,
+        markdown: finalResult.markdown,
+      };
 
       return {
         content: [{ type: 'text', text: formatVisitMarkdown(finalResult) }],
@@ -202,6 +289,7 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
           url: finalResult.url,
           length: finalResult.markdown.length,
         },
+        structuredContent,
       };
     },
   });
@@ -212,21 +300,15 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
     description: 'Take a screenshot of the current page or navigate to a URL first.',
     promptSnippet: 'Take a screenshot of a web page at desktop or mobile size',
     promptGuidelines: TOOL_GUIDELINES,
+    outputSchema: SCREENSHOT_OUTPUT,
+    namespace: BROWSER_NAMESPACE,
+    annotations: { readOnlyHint: true, openWorldHint: true },
     parameters: Type.Object({
       url: Type.Optional(Type.String({ description: 'URL to navigate to before capturing' })),
       viewport: Type.Optional(StringEnum(VIEWPORT_ENUM, { description: 'Viewport preset' })),
       width: Type.Optional(Type.Number({ description: 'Viewport width override' })),
       height: Type.Optional(Type.Number({ description: 'Viewport height override' })),
       cdp: CDP_PARAM,
-      analyze: Type.Optional(
-        Type.Boolean({
-          description:
-            'Analyze the screenshot with a vision model and return a text description instead of the image.',
-        }),
-      ),
-      analyze_prompt: Type.Optional(
-        Type.String({ description: 'Custom prompt for screenshot analysis (requires analyze).' }),
-      ),
       ...SAVE_PARAMS,
     }),
     async execute(
@@ -237,12 +319,7 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
         width?: number;
         height?: number;
         cdp?: string;
-        analyze?: boolean;
-        analyze_prompt?: string;
       } & SaveParams,
-      signal: AbortSignal | undefined,
-      _onUpdate: unknown,
-      ctx: { modelRegistry: AnalysisModelRegistry },
     ) {
       const browserBackend = await resolveBrowserBackend();
       browserBackend.bindCdpTarget(resolveCdpTarget(params.cdp, env));
@@ -252,31 +329,16 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
         preset: (params.viewport ?? 'desktop') as ViewportPreset,
         width: params.width,
         height: params.height,
-        waitMs: 1500,
         capturePng: shouldSaveScreenshot(params),
       });
       const saved = await maybeSaveScreenshot(params, screenshot);
-
-      if (resolveAnalyzeEnabled(params.analyze, env)) {
-        const analysis = await analyzeScreenshot({
-          modelRegistry: ctx.modelRegistry,
-          imageBase64: screenshot.imageBase64,
-          mimeType: screenshot.mimeType,
-          prompt: params.analyze_prompt,
-          signal,
-          env,
-        });
-        return {
-          content: [{ type: 'text', text: analysis.text }, ...savedScreenshotBlock(saved)],
-          details: {
-            backend: browserBackend.name,
-            url: screenshot.url,
-            viewport: screenshot.viewport,
-            analysis: { model: analysis.model } as { model: string } | undefined,
-            savedPath: saved?.path,
-          },
-        };
-      }
+      const structuredContent = {
+        backend: browserBackend.name,
+        url: screenshot.url,
+        viewport: screenshot.viewport,
+        image: imageBlockFor(screenshot),
+        ...(saved ? { savedPath: saved.path } : {}),
+      };
 
       return {
         content: [
@@ -291,9 +353,9 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
           backend: browserBackend.name,
           url: screenshot.url,
           viewport: screenshot.viewport,
-          analysis: undefined,
           savedPath: saved?.path,
         },
+        structuredContent,
       };
     },
   });
@@ -304,6 +366,9 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
     description: 'Interact with the currently open browser page and return a fresh screenshot.',
     promptSnippet: 'Interact with the current browser page (click, type, scroll, etc.)',
     promptGuidelines: TOOL_GUIDELINES,
+    outputSchema: INTERACT_OUTPUT,
+    namespace: BROWSER_NAMESPACE,
+    annotations: { openWorldHint: true },
     parameters: Type.Object({
       action: StringEnum(ACTION_ENUM, { description: 'Interaction to perform' }),
       cdp: CDP_PARAM,
@@ -315,14 +380,11 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
       ),
       amount: Type.Optional(Type.Number({ description: 'Scroll amount in pixels' })),
       timeout: Type.Optional(Type.Number({ description: 'Wait timeout in milliseconds' })),
-      analyze: Type.Optional(
+      snapshot: Type.Optional(
         Type.Boolean({
           description:
-            'Analyze the resulting screenshot with a vision model and return a text description instead of the image.',
+            'Return a fresh interactive page snapshot (accessibility tree with @refs) as text instead of a screenshot. Use after actions that change the page.',
         }),
-      ),
-      analyze_prompt: Type.Optional(
-        Type.String({ description: 'Custom prompt for screenshot analysis (requires analyze).' }),
       ),
       ...SAVE_PARAMS,
     }),
@@ -337,12 +399,8 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
         direction?: (typeof SCROLL_DIRECTION_ENUM)[number];
         amount?: number;
         timeout?: number;
-        analyze?: boolean;
-        analyze_prompt?: string;
+        snapshot?: boolean;
       } & SaveParams,
-      signal: AbortSignal | undefined,
-      _onUpdate: unknown,
-      ctx: { modelRegistry: AnalysisModelRegistry },
     ) {
       const browserBackend = await resolveBrowserBackend();
       browserBackend.bindCdpTarget(resolveCdpTarget(params.cdp, env));
@@ -354,36 +412,45 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
       }
 
       const interaction = await browserBackend.interact(params);
-      const screenshot = await browserBackend.screenshot({
-        capturePng: shouldSaveScreenshot(params),
-      });
-      const saved = await maybeSaveScreenshot(params, screenshot);
 
-      if (resolveAnalyzeEnabled(params.analyze, env)) {
-        const analysis = await analyzeScreenshot({
-          modelRegistry: ctx.modelRegistry,
-          imageBase64: screenshot.imageBase64,
-          mimeType: screenshot.mimeType,
-          prompt: params.analyze_prompt,
-          signal,
-          env,
-        });
+      if (params.snapshot) {
+        const snapshot = await browserBackend.snapshot();
+        const saved = shouldSaveScreenshot(params)
+          ? await maybeSaveScreenshot(
+              params,
+              await browserBackend.screenshot({ capturePng: true }),
+            )
+          : undefined;
+
         return {
           content: [
             { type: 'text', text: `Action completed: ${params.action}` },
-            { type: 'text', text: analysis.text },
+            { type: 'text', text: snapshot || 'No interactive elements found.' },
             ...savedScreenshotBlock(saved),
           ],
           details: {
             action: params.action,
             backend: browserBackend.name,
-            url: interaction.url ?? screenshot.url,
-            viewport: interaction.viewport ?? screenshot.viewport,
-            analysis: { model: analysis.model } as { model: string } | undefined,
+            url: interaction.url,
+            viewport: interaction.viewport,
+            snapshot: true,
             savedPath: saved?.path,
+          },
+          structuredContent: {
+            action: params.action,
+            backend: browserBackend.name,
+            url: interaction.url,
+            viewport: interaction.viewport,
+            snapshot: snapshot || 'No interactive elements found.',
+            ...(saved ? { savedPath: saved.path } : {}),
           },
         };
       }
+
+      const screenshot = await browserBackend.screenshot({
+        capturePng: shouldSaveScreenshot(params),
+      });
+      const saved = await maybeSaveScreenshot(params, screenshot);
 
       return {
         content: [
@@ -403,8 +470,16 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
           backend: browserBackend.name,
           url: interaction.url ?? screenshot.url,
           viewport: interaction.viewport ?? screenshot.viewport,
-          analysis: undefined,
+          snapshot: false,
           savedPath: saved?.path,
+        },
+        structuredContent: {
+          action: params.action,
+          backend: browserBackend.name,
+          url: interaction.url ?? screenshot.url,
+          viewport: interaction.viewport ?? screenshot.viewport,
+          image: imageBlockFor(screenshot),
+          ...(saved ? { savedPath: saved.path } : {}),
         },
       };
     },
@@ -420,6 +495,9 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
       'Use `web_console` to inspect runtime errors, warnings, and log output from the browser.',
       '`web_console` captures output from the moment the browser opens. Use `clear: true` to reset the buffer after reading.',
     ],
+    outputSchema: CONSOLE_OUTPUT,
+    namespace: BROWSER_NAMESPACE,
+    annotations: { readOnlyHint: true, openWorldHint: true },
     parameters: Type.Object({
       cdp: CDP_PARAM,
       level: Type.Optional(
@@ -458,6 +536,13 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
         const reason = !browserBackend.isOpen()
           ? 'Browser is not open. Use web_screenshot or web_visit with render:true first.'
           : 'No console output captured yet.';
+        const structuredContent = {
+          count: 0,
+          levels: {},
+          cleared: params.clear ?? false,
+          backend: browserBackend.name,
+          entries: [],
+        };
         return {
           content: [{ type: 'text', text: reason }],
           details: {
@@ -466,6 +551,7 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
             cleared: params.clear ?? false,
             backend: browserBackend.name,
           },
+          structuredContent,
         };
       }
 
@@ -475,20 +561,29 @@ export default function browserToolsExtension(pi: ExtensionAPI) {
           return `[${tag}] ${entry.text}`;
         })
         .join('\n');
+      const levels = Object.fromEntries(
+        CONSOLE_LEVEL_ENUM.map((level) => [
+          level,
+          entries.filter((entry) => entry.level === level).length,
+        ]).filter(([, count]) => (count as number) > 0),
+      );
+      const structuredContent = {
+        count: entries.length,
+        levels,
+        cleared: params.clear ?? false,
+        backend: browserBackend.name,
+        entries,
+      };
 
       return {
         content: [{ type: 'text', text: formatted }],
         details: {
           count: entries.length,
-          levels: Object.fromEntries(
-            CONSOLE_LEVEL_ENUM.map((level) => [
-              level,
-              entries.filter((entry) => entry.level === level).length,
-            ]).filter(([, count]) => (count as number) > 0),
-          ),
+          levels,
           cleared: params.clear ?? false,
           backend: browserBackend.name,
         },
+        structuredContent,
       };
     },
   });

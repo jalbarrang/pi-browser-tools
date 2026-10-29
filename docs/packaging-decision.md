@@ -1,5 +1,7 @@
 # Packaging decision
 
+> Superseded: the Playwright backend has since been removed. `agent-browser` is now the only runtime; the one-package decision still stands.
+
 Decision date: 2026-04-23
 
 Evidence source:

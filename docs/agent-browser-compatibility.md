@@ -1,18 +1,10 @@
 # agent-browser compatibility notes
 
-`@dreki-gg/pi-browser-tools` can run with either browser backend:
-
-```bash
-export PI_BROWSER_BACKEND=playwright
-# or
-export PI_BROWSER_BACKEND=agent-browser
-```
-
-If `PI_BROWSER_BACKEND` is unset or invalid, the package falls back to `playwright`.
+`@dreki-gg/pi-browser-tools` uses [`agent-browser`](https://github.com/agent-browser/agent-browser) as its only browser runtime. There is no Playwright fallback; if the CLI is unavailable, browser-backed tools fail with install guidance.
 
 ## agent-browser install requirement
 
-The `agent-browser` backend requires a local CLI install plus its first-run browser setup:
+The backend requires a local CLI install plus its first-run browser setup:
 
 ```bash
 # Homebrew
@@ -22,50 +14,56 @@ brew install agent-browser && agent-browser install
 npm install -g agent-browser && agent-browser install
 ```
 
-If `agent-browser` is selected but unavailable, browser-backed tools fail with this guidance instead of silently falling back.
+## Session and CDP behavior
+
+- Each pi process uses an isolated session named `pi-browser-tools-<pid>` by default. Override it with `PI_BROWSER_SESSION` to keep one stable session across restarts.
+- When attached through CDP (`cdp` param or `PI_BROWSER_CDP`), the backend connects with `--pin-tab`. A session whose pinned tab was closed fails with `tab_gone` instead of acting on a different agent's tab.
+- The connected browser is user-owned: `close()` drops local session state but never closes it.
+
+## Wait behavior
+
+Navigation waits for the document `load` event (`wait --load load`, capped at 5s) instead of a fixed delay. Explicit `waitMs` values still perform a fixed wait. This follows agent-browser's guidance to prefer lifecycle/target waits over blind sleeps.
 
 ## Known compatibility gaps
 
-### `web_interact.text` is best-effort on `agent-browser`
+### `web_interact.text` is best-effort
 
-The public tool contract still accepts:
+The public tool contract accepts:
 
 ```ts
 text?: string
 ```
 
-Behavior differs by backend:
+Resolution uses the interactive accessibility snapshot with tiered matching:
 
-- `playwright`: keeps exact-text, fuzzy-text, and role-based fallback matching.
-- `agent-browser`: resolves text targets from interactive snapshot data when possible.
+1. exact accessible name
+2. exact visible text
+3. case-insensitive substring on accessible name
+4. case-insensitive substring on visible text
 
-For reliable automation on both backends, prefer `selector`. When `agent-browser` cannot resolve a unique text target, it fails clearly and recommends using `selector` instead.
+A tier only wins when it yields a single match; ambiguity throws instead of guessing. For reliable automation, prefer `selector` (CSS or `@ref`).
 
-### `web_console` may differ slightly on `agent-browser`
+### `web_console` output is merged
 
-`agent-browser` currently builds console output by combining CLI `console` and `errors` data. That means:
+`web_console` combines CLI `console` and `errors` data. That means:
 
-- ordering can differ slightly from Playwright
-- some level attribution may differ slightly from Playwright
+- ordering can differ slightly from a single DevTools stream
+- some level attribution is best-effort
 - page errors are still surfaced as `page-error`
 
 The public result shape stays the same, with an additive `details.backend` field.
 
-### `web_visit.details.method` can now be `agent-browser`
+### `web_interact.snapshot` replaces the screenshot
 
-`web_visit.details.method` was previously effectively `fetch | playwright`.
-It can now be:
+Pass `snapshot: true` to `web_interact` to get the fresh interactive accessibility tree as text (`@e1`, `@e2`, ...) instead of an image. This is the recommended follow-up after a page-changing action: it is cheaper than a screenshot and gives you refs for the next call. The default remains a screenshot.
 
-- `fetch`
-- `playwright`
-- `agent-browser`
+### `web_visit.details.method`
 
-`details.backend` reports the selected browser backend for browser-backed tools.
+`web_visit.details.method` is either `fetch` or `agent-browser`. `details.backend` always reports `agent-browser` for browser-backed tools.
 
-## Compatibility policy for this slice
+## Compatibility policy
 
-- Tool names and arguments stay the same.
+- Tool names and arguments stay stable except for documented additions.
 - `selector` remains the preferred cross-backend targeting mechanism.
 - `text` remains best-effort, not guaranteed.
-- `scroll` remains vertical-only because that matches the existing public contract.
-- No packaging rename or split decision is made in this slice.
+- `scroll` remains vertical-only because that matches the public contract.

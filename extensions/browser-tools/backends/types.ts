@@ -84,6 +84,11 @@ export interface BrowserBackend {
     url: string | null;
     viewport: { width: number; height: number } | null;
   }>;
+  /**
+   * Return the interactive accessibility snapshot (one `@eN` ref per element).
+   * Take a fresh snapshot after any page-changing interaction.
+   */
+  snapshot(): Promise<string>;
   getConsoleEntries(options?: {
     level?: ConsoleEntry['level'][];
     clear?: boolean;

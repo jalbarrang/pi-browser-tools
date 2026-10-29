@@ -2,19 +2,20 @@ import { describe, expect, test } from 'bun:test';
 import { checkAgentBrowserAvailable } from '../../extensions/browser-tools/backends/agent-browser-cli.js';
 
 describe('checkAgentBrowserAvailable', () => {
-  test('probes liveness via `session list`, never `doctor`', async () => {
+  test('probes with `--version` without starting a daemon', async () => {
     const calls: string[][] = [];
     await checkAgentBrowserAvailable(async (args) => {
       calls.push(args);
-      return { sessions: [] };
+      return 'agent-browser 0.0.0';
     });
-    expect(calls).toEqual([['session', 'list']]);
+    expect(calls).toEqual([['--version']]);
+    expect(calls.flat()).not.toContain('session');
     expect(calls.flat()).not.toContain('doctor');
   });
 
-  test('resolves when the CLI is present and responsive', async () => {
+  test('resolves when the CLI is present and runnable', async () => {
     await expect(
-      checkAgentBrowserAvailable(async () => ({ sessions: [] })),
+      checkAgentBrowserAvailable(async () => 'agent-browser 0.0.0'),
     ).resolves.toBeUndefined();
   });
 

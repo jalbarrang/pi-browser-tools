@@ -19,7 +19,8 @@ import type {
   ViewportPreset,
 } from './types.js';
 
-const DEFAULT_WAIT_MS = 1_500;
+const LOAD_WAIT_TIMEOUT_MS = 5_000;
+const LOAD_WAIT_FALLBACK_MS = 500;
 const POST_INTERACTION_WAIT_MS = 500;
 const MAX_CONSOLE_ENTRIES = 1_000;
 
@@ -123,7 +124,7 @@ class AgentBrowserBackend implements BrowserBackend {
         await this.setViewportInternal('desktop');
       }
 
-      await this.waitForPage(options?.waitMs ?? DEFAULT_WAIT_MS);
+      await this.waitForReadyState(options?.waitMs);
       await this.refreshUrl(url);
       return {
         url: this.status.url ?? url,
@@ -167,7 +168,7 @@ class AgentBrowserBackend implements BrowserBackend {
       }
 
       if (options?.url || options?.waitMs !== undefined) {
-        await this.waitForPage(options?.waitMs ?? DEFAULT_WAIT_MS);
+        await this.waitForReadyState(options?.waitMs);
       }
 
       const captured = await this.captureScreenshot(options?.capturePng ?? false);
@@ -294,7 +295,7 @@ class AgentBrowserBackend implements BrowserBackend {
         await this.setViewportInternal('desktop');
       }
 
-      await this.waitForPage(DEFAULT_WAIT_MS);
+      await this.waitForLoad();
 
       const result = await runAgentBrowserJson<{
         origin?: string;
@@ -314,6 +315,20 @@ class AgentBrowserBackend implements BrowserBackend {
         url: finalUrl,
         backend: this.name,
       };
+    });
+  }
+
+  async snapshot(): Promise<string> {
+    return this.runExclusive(async () => {
+      await this.ensureAvailable();
+      await this.ensureReady();
+
+      const data = await runAgentBrowserJson<AgentBrowserSnapshotData>(['snapshot', '-i']);
+      if (data.origin?.trim()) {
+        this.markOpen(data.origin.trim());
+      }
+
+      return data.snapshot?.trim() ?? '';
     });
   }
 
@@ -359,24 +374,34 @@ class AgentBrowserBackend implements BrowserBackend {
   private async openInternal(url?: string): Promise<void> {
     if (this.cdpTarget && !this.connected) {
       // Attach to the running browser via CDP instead of launching our own.
+      // --pin-tab keeps this session on its own tab when other agents share the
+      // same Chrome; a closed pinned tab fails with `tab_gone` instead of
+      // silently acting on another session's tab.
       try {
-        await runAgentBrowserJson(['connect', this.cdpTarget]);
+        await runAgentBrowserJson(['connect', this.cdpTarget, '--pin-tab'], {
+          retryOnOutcomeUnknown: true,
+        });
       } catch (error) {
         throw new Error(buildCdpConnectError(this.cdpTarget, error));
       }
       this.connected = true;
       if (url) {
-        await runAgentBrowserJson(['open', url]);
+        await this.openUrl(url);
       }
     } else if (url) {
-      await runAgentBrowserJson(['open', url]);
+      await this.openUrl(url);
     } else if (!this.connected) {
       // Never issue a bare `open` on a connected session; it could spawn a
       // second browser. Reuse the already-attached active page instead.
-      await runAgentBrowserJson(['open']);
+      await runAgentBrowserJson(['open'], { retryOnOutcomeUnknown: true });
     }
 
     this.markOpen(url ?? this.status.url ?? 'about:blank');
+  }
+
+  private async openUrl(url: string): Promise<void> {
+    // `open` is idempotent: retrying after an `outcome_unknown` daemon hiccup is safe.
+    await runAgentBrowserJson(['open', url], { retryOnOutcomeUnknown: true });
   }
 
   private async setViewportInternal(
@@ -409,6 +434,36 @@ class AgentBrowserBackend implements BrowserBackend {
     }
 
     await runAgentBrowserJson(['wait', String(waitMs)]);
+  }
+
+  /**
+   * Wait for the document load event instead of a blind delay. `open` already
+   * waits for load, so this resolves immediately in the common case; the
+   * timeout keeps a stuck resource from hanging the tool. Older CLIs without
+   * `wait --load` fall back to a short fixed wait.
+   */
+  private async waitForLoad(): Promise<void> {
+    try {
+      await runAgentBrowserJson([
+        'wait',
+        '--load',
+        'load',
+        '--timeout',
+        String(LOAD_WAIT_TIMEOUT_MS),
+      ]);
+    } catch {
+      await this.waitForPage(LOAD_WAIT_FALLBACK_MS);
+    }
+  }
+
+  /** An explicit `waitMs` means "settle for this long"; otherwise wait for load. */
+  private async waitForReadyState(waitMs: number | undefined): Promise<void> {
+    if (waitMs !== undefined) {
+      await this.waitForPage(waitMs);
+      return;
+    }
+
+    await this.waitForLoad();
   }
 
   private async refreshUrl(fallbackUrl?: string): Promise<void> {
